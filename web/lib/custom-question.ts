@@ -1,4 +1,28 @@
-/** Classifies a user-written plant question for tailored section titles and draft content. */
+/**
+ * custom-question.ts — Topic detection and semantic title generation for custom questions
+ *
+ * Analyzes user questions to:
+ * 1. Detect question intent (safety, care, distribution, ecology, culture, identification, general)
+ * 2. Determine answer depth (short factual vs. full multi-section)
+ * 3. Generate topic-aware section titles for display-section.tsx rendering
+ *
+ * Integrates with: plant-display.ts (applyCustomTitles), display_section.tsx (customTopicLabel)
+ * Styled via: TONE_STYLES in display_section.tsx
+ */
+
+// ─── Topic classification ──────────────────────────────────────────────────
+
+/**
+ * Seven topic categories that trigger different content strategies:
+ *
+ * - "safety"       → Toxicity, allergens, pet/child risks (amber/caution tone)
+ * - "care"         → Growing, watering, light, soil (positive tone with cautions)
+ * - "distribution" → Where it grows, regional prevalence (neutral tone)
+ * - "ecology"      → Habitat, invasiveness, wildlife value (mixed positive/caution)
+ * - "culture"      → History, folklore, heritage uses (neutral/violet tone)
+ * - "identification" → How to tell species apart, lookalikes (neutral tone)
+ * - "general"      → Default for unclear or mixed questions (neutral)
+ */
 export type CustomQuestionTopic =
   | "safety"
   | "care"
@@ -8,25 +32,43 @@ export type CustomQuestionTopic =
   | "identification"
   | "general";
 
+/**
+ * Semantic section titles that adapt to the detected topic.
+ * Used by display_section.tsx to label report sections contextually.
+ *
+ * Example:
+ * - Safety question: "overview" → "Safety summary", "detailed" → "Detailed safety assessment"
+ * - Care question: "overview" → "Quick answer", "detailed" → "Growing & care guide"
+ */
 export type CustomSectionTitles = {
-  overview: string;
-  detailed: string;
-  facts: string;
-  caveats: string;
-  steps: string;
-  verification: string;
+  overview: string; // Lead paragraph / direct answer
+  detailed: string; // In-depth elaboration (uses_and_care_tips field)
+  facts: string; // Supporting bullet points (advantages field)
+  caveats: string; // Limitations / counters (disadvantages field)
+  steps: string; // Actionable next steps (traditional_or_cultural_notes field)
+  verification: string; // Safety / verification note (identification_and_safety field)
 };
 
 /**
- * Whether the question is a short factual lookup (yes/no, where, what color, etc.)
- * or a deeper question requiring a full multi-section report.
+ * Answer depth mode for custom questions.
+ * Short-answer questions get a concise direct response.
+ * Full-answer questions receive a multi-section report.
+ *
+ * Determined by: question length, syntax patterns, explicit phrases.
  */
 export type CustomAnswerMode = "short" | "full";
 
-// ─── Short-answer question patterns ──────────────────────────────────────────
-// These patterns detect questions that should get a crisp direct answer
-// rather than a full multi-section report.
+// ─── Short-answer detection patterns ───────────────────────────────────────
 
+/**
+ * Regex patterns for questions expecting yes/no or factual single-line answers.
+ * Questions matching these patterns + short length → "short" answer mode.
+ *
+ * Covers:
+ * - Auxiliaries: "Is...", "Does...", "Can...", "Will..."
+ * - WH-questions seeking facts: "What color?", "Where does it grow?", "How tall?"
+ * - Binary prompts: "toxic?", "edible?", "poisonous?"
+ */
 const SHORT_ANSWER_PATTERNS: RegExp[] = [
   /^(is|are|does|do|can|will|was|has|have|did|could|should|would)\b/i,
   /^(what (color|colour|size|height|shape|smell|taste|name|family|genus|type|kind))/i,
@@ -37,53 +79,135 @@ const SHORT_ANSWER_PATTERNS: RegExp[] = [
   /\b(yes or no|true or false|toxic\?|edible\?|safe\?|poisonous\?|invasive\?)\b/i,
 ];
 
-/** Heuristic: is this a short factual question or a deep-dive request? */
+/**
+ * Detects whether a custom question should receive a brief direct answer or a full report.
+ *
+ * Heuristics:
+ * 1. Short questions (<80 chars) matching SHORT_ANSWER_PATTERNS → "short"
+ * 2. Questions with "how to", "explain", "describe", "tell me" → "full"
+ * 3. Multi-part questions (multiple "?" or "and...?") → "full"
+ * 4. Default: short (<60 chars), full (≥60 chars)
+ *
+ * Used by: display_section.tsx to select CustomShortAnswerLayout vs CustomFullAnswerLayout
+ */
 export function detectAnswerMode(question: string): CustomAnswerMode {
   const q = question.trim();
-  // Short questions (under 50 chars) that match a quick-answer pattern → short
+
+  // Pattern 1: Short syntactic questions
   if (q.length < 80 && SHORT_ANSWER_PATTERNS.some((p) => p.test(q))) {
     return "short";
   }
-  // Questions explicitly asking "how to", "explain", "tell me about", "describe" → full
-  if (/\b(how to|how do i|explain|tell me (about|more)|describe|what are the|give me|walk me|detail|elaborate)\b/i.test(q)) {
+
+  // Pattern 2: Explicit pedagogical requests
+  if (
+    /\b(how to|how do i|explain|tell me (about|more)|describe|what are the|give me|walk me|detail|elaborate)\b/i.test(
+      q,
+    )
+  ) {
     return "full";
   }
-  // Multi-question (contains "and" or "?") → full
-  if (/\band\b.{10,}|[?].*[?]/.test(q)) return "full";
-  // Default: short for brief questions, full for longer ones
+
+  // Pattern 3: Multi-question compound
+  if (/\band\b.{10,}|[?].*[?]/.test(q)) {
+    return "full";
+  }
+
+  // Default: length-based
   return q.length < 60 ? "short" : "full";
 }
 
-export function detectCustomQuestionTopic(question: string): CustomQuestionTopic {
+// ─── Topic detection ──────────────────────────────────────────────────────
+
+/**
+ * Classifies a custom question into one of seven topic categories.
+ * Uses keyword patterns to infer user intent.
+ *
+ * Fallback: "general" for ambiguous or mixed-topic questions.
+ */
+export function detectCustomQuestionTopic(
+  question: string,
+): CustomQuestionTopic {
   const q = question.toLowerCase();
-  if (/\b(toxic|poison|dangerous|safe|safety|eat|edible|consume|ingest|pet|dog|cat|child|allerg|irritat)\b/.test(q)) {
+
+  // Safety: toxicity, edibility, allergens, pet/child safety
+  if (
+    /\b(toxic|poison|dangerous|safe|safety|eat|edible|consume|ingest|pet|dog|cat|child|allerg|irritat)\b/.test(
+      q,
+    )
+  ) {
     return "safety";
   }
-  if (/\b(grow|care|water|soil|fertiliz|prun|plant|garden|indoor|pot|sunlight|shade|winter|hardiness)\b/.test(q)) {
+
+  // Care: cultivation, watering, light, soil, propagation
+  if (
+    /\b(grow|care|water|soil|fertiliz|prun|plant|garden|indoor|pot|sunlight|shade|winter|hardiness)\b/.test(
+      q,
+    )
+  ) {
     return "care";
   }
-  if (/\b(where|which region|found|distribution|native range|in india|location|state)\b/.test(q)) {
+
+  // Distribution: geographic range, regional occurrence
+  if (
+    /\b(where|which region|found|distribution|native range|in india|location|state)\b/.test(
+      q,
+    )
+  ) {
     return "distribution";
   }
-  if (/\b(native|invasive|ecolog|wildlife|pollinat|habitat|environment|conservation|biodivers)\b/.test(q)) {
+
+  // Ecology: habitat, invasiveness, wildlife, conservation
+  if (
+    /\b(native|invasive|ecolog|wildlife|pollinat|habitat|environment|conservation|biodivers)\b/.test(
+      q,
+    )
+  ) {
     return "ecology";
   }
-  if (/\b(culture|history|tradition|folklore|heritage|symbol|religious|ceremon)\b/.test(q)) {
+
+  // Culture: history, folklore, heritage, traditions
+  if (
+    /\b(culture|history|tradition|folklore|heritage|symbol|religious|ceremon)\b/.test(
+      q,
+    )
+  ) {
     return "culture";
   }
-  if (/\b(identify|identification|look.?alike|confus|species|tell apart|difference between)\b/.test(q)) {
+
+  // Identification: how to tell apart, lookalikes, distinguishing features
+  if (
+    /\b(identify|identification|look.?alike|confus|species|tell apart|difference between)\b/.test(
+      q,
+    )
+  ) {
     return "identification";
   }
+
+  // Default: general / unclassified
   return "general";
 }
 
+// ─── Semantic title mapping ───────────────────────────────────────────────
+
+/**
+ * Maps (topic, section) → semantic title.
+ *
+ * For example, if user asks "Is this toxic?":
+ * - topic = "safety"
+ * - overview → "Safety summary"
+ * - detailed → "Detailed safety assessment"
+ * - facts → "Known risk factors"
+ * - caveats → "Uncertainties & mis-ID risks"
+ *
+ * Ensures each section heading contextualizes content for the user's intent.
+ */
 const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
   safety: {
     overview: "Safety summary",
     detailed: "Detailed safety assessment",
     facts: "Known risk factors",
     caveats: "Uncertainties & mis-ID risks",
-    steps: "What to do next",
+    steps: "Protective measures",
     verification: "Confirm identity before acting",
   },
   care: {
@@ -97,7 +221,7 @@ const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
   distribution: {
     overview: "Direct location answer",
     detailed: "Regional distribution details",
-    facts: "Location evidence",
+    facts: "Geographic evidence",
     caveats: "Distribution limits",
     steps: "How to verify locally",
     verification: "Location confidence note",
@@ -107,7 +231,7 @@ const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
     detailed: "Habitat & environmental impact",
     facts: "Ecological benefits",
     caveats: "Environmental concerns",
-    steps: "Responsible actions",
+    steps: "Responsible planting",
     verification: "Field verification",
   },
   culture: {
@@ -115,8 +239,8 @@ const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
     detailed: "Historical & cultural context",
     facts: "Documented significance",
     caveats: "Cautions & regional variation",
-    steps: "Further research steps",
-    verification: "Identification note",
+    steps: "Further research",
+    verification: "Source verification",
   },
   identification: {
     overview: "Identification summary",
@@ -127,7 +251,7 @@ const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
     verification: "Safety while identifying",
   },
   general: {
-    overview: "Short answer",
+    overview: "Direct answer",
     detailed: "In-depth response",
     facts: "Supporting facts",
     caveats: "Limits & caveats",
@@ -136,10 +260,26 @@ const TITLE_MAP: Record<CustomQuestionTopic, CustomSectionTitles> = {
   },
 };
 
+/**
+ * Returns topic-specific section titles for a custom question.
+ *
+ * Usage in plant-display.ts (applyCustomTitles):
+ *   const titles = customSectionTitles(userQuestion);
+ *   block.title = titles.overview;  // "Safety summary" or "Quick answer" etc.
+ */
 export function customSectionTitles(question: string): CustomSectionTitles {
-  return TITLE_MAP[detectCustomQuestionTopic(question)];
+  const topic = detectCustomQuestionTopic(question);
+  return TITLE_MAP[topic];
 }
 
+// ─── Topic label (for display) ─────────────────────────────────────────────
+
+/**
+ * Human-readable label for the detected topic.
+ * Displayed as a badge in the custom question header (display_section.tsx).
+ *
+ * Example: "Safety & toxicity", "Growing & care", "Identification"
+ */
 const TOPIC_LABELS: Record<CustomQuestionTopic, string> = {
   safety: "Safety & toxicity",
   care: "Growing & care",
@@ -150,6 +290,12 @@ const TOPIC_LABELS: Record<CustomQuestionTopic, string> = {
   general: "General",
 };
 
+/**
+ * Retrieves the human-readable badge label for a question's detected topic.
+ *
+ * Usage: CustomAnswerDisplay header shows the topic label as a Pill component.
+ */
 export function customTopicLabel(question: string): string {
-  return TOPIC_LABELS[detectCustomQuestionTopic(question)];
+  const topic = detectCustomQuestionTopic(question);
+  return TOPIC_LABELS[topic];
 }
