@@ -713,13 +713,13 @@ export default function Home() {
                   DEVELOPMENT TEAM
                 </p>
                 <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-1 text-xs font-semibold text-zinc-300">
-                  <span>Achin Hazra</span>
+                  <span>Achinta</span>
                   <span className="text-zinc-800">•</span>
-                  <span>Tuhin Bera</span>
+                  <span>Tuhin</span>
                   <span className="text-zinc-800">•</span>
-                  <span>Nilu</span>
+                  <span>Nirmalya</span>
                   <span className="text-zinc-800">•</span>
-                  <span>Ganesh Jana</span>
+                  <span>Ganesh</span>
                   <span className="text-zinc-800">•</span>
                   <span>Chinmoy</span>
                 </div>
