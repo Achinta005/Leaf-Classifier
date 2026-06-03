@@ -58,7 +58,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plant Leaf ML Service", lifespan=lifespan)
 
 origins = os.environ.get(
-    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,https://ml-project-nu-olive.vercel.app",
 ).split(",")
 app.add_middleware(
     CORSMiddleware,
