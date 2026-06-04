@@ -29,6 +29,7 @@ EVAL_RESIZE_SHORT = 256
 EVAL_CROP_SIZE = 224
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+LOW_CONFIDENCE_FLOOR = 0.15
 
 _BACKBONES: dict[str, tuple[Callable[..., nn.Module], Any]] = {
     "b0": (efficientnet_b0, EfficientNet_B0_Weights.IMAGENET1K_V1),

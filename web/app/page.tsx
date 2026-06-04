@@ -368,7 +368,7 @@ export default function Home() {
   );
 
   return (
-    <main className="min-h-screen bg-[#060a07] text-zinc-100 flex flex-col font-sans">
+    <main className="min-h-screen bg-[#060a07] text-zinc-100 flex flex-col font-sans overflow-x-hidden">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap');
         * { font-family: 'DM Sans', sans-serif; }
@@ -389,7 +389,7 @@ export default function Home() {
       <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" aria-hidden="true" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
 
       {/* ── Nav ── */}
-      <nav className="shrink-0 z-20 border-b border-zinc-900 bg-zinc-950/90 backdrop-blur-xl px-6 py-0 flex items-stretch h-14">
+      <nav className="shrink-0 z-20 border-b border-zinc-900 bg-zinc-950/90 backdrop-blur-xl px-3 sm:px-6 py-0 flex items-stretch h-14">
         <div className="flex items-center gap-3 mr-auto">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10 ring-1 ring-emerald-500/25">
             <Leaf className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.5} />
@@ -429,12 +429,12 @@ export default function Home() {
       </nav>
 
       {/* ── Layout ── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col lg:flex-row flex-1 lg:overflow-hidden">
 
         {/* ═══════════════════════════════
             SIDEBAR
         ═══════════════════════════════ */}
-        <aside className="w-[340px] lg:w-[380px] shrink-0 flex flex-col border-r border-zinc-900 bg-zinc-950 overflow-y-auto">
+        <aside className="w-full lg:w-[340px] xl:w-[380px] lg:shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-zinc-900 bg-zinc-950 lg:overflow-y-auto">
 
           {/* ── Step 1: Upload ── */}
           <div className="sidebar-section p-5">
@@ -726,11 +726,11 @@ export default function Home() {
         {/* ═══════════════════════════════
             MAIN PANEL
         ═══════════════════════════════ */}
-        <div className="flex-1 overflow-y-auto scan-line bg-[#060a07]">
+        <div className="flex-1 min-h-0 lg:overflow-y-auto scan-line bg-[#060a07]">
 
           {/* Empty state */}
           {!file && !predictions && (
-            <div className="flex h-full flex-col items-center justify-center gap-8 px-8 py-20 text-center">
+            <div className="flex h-full flex-col items-center justify-center gap-6 sm:gap-8 px-4 sm:px-8 py-12 sm:py-20 text-center">
               <div className="relative">
                 <div className="h-24 w-24 rounded-3xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mx-auto">
                   <Leaf className="h-10 w-10 text-emerald-500/60" strokeWidth={1.5} />
@@ -738,14 +738,14 @@ export default function Home() {
                 <div className="absolute -inset-4 rounded-full bg-emerald-500/5 blur-xl" />
               </div>
               <div>
-                <h1 className="text-3xl font-semibold tracking-tight text-zinc-100 mb-3">
+                <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-zinc-100 mb-3">
                   Identify a plant from its leaf
                 </h1>
-                <p className="text-sm leading-relaxed text-zinc-500 max-w-md mx-auto">
+                <p className="text-xs sm:text-sm leading-relaxed text-zinc-500 max-w-md mx-auto">
                   Upload or photograph a leaf, run the local classifier, then generate a structured AI report in your chosen style.
                 </p>
               </div>
-              <div className="grid max-w-md grid-cols-3 gap-3 w-full">
+              <div className="grid max-w-md grid-cols-1 sm:grid-cols-3 gap-3 w-full">
                 {[
                   { icon: "📷", step: "01", label: "Upload photo", sub: "JPEG · PNG · WebP" },
                   { icon: "🔬", step: "02", label: "Classify", sub: "Local ML model" },
@@ -764,7 +764,7 @@ export default function Home() {
 
           {/* Image ready, not classified */}
           {file && !predictions && !loading && (
-            <div className="flex h-full flex-col items-center justify-center gap-5 px-8 py-16">
+            <div className="flex h-full flex-col items-center justify-center gap-5 px-4 sm:px-8 py-10 sm:py-16">
               <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-black/40 shadow-2xl max-w-sm w-full">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={preview ?? ""} alt="Leaf preview" className="max-h-80 w-full object-contain" />
@@ -794,7 +794,7 @@ export default function Home() {
 
           {/* Results */}
           {predictions && predictions.length > 0 && (
-            <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
+            <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
 
               {/* Results header */}
               <div className="fade-in">
@@ -839,7 +839,7 @@ export default function Home() {
                       <div key={i} className="h-2.5 rounded-full bg-zinc-800/80" style={{ width: `${w * 100}%` }} />
                     ))}
                   </div>
-                  <div className="grid grid-cols-2 gap-4 pt-1">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
                     {[0, 1].map((i) => (
                       <div key={i} className="space-y-2 rounded-xl border border-zinc-800/40 p-4">
                         {[1, 2, 3].map((j) => (
@@ -897,7 +897,7 @@ export default function Home() {
 
               {/* Preview + top prediction when no write-up yet */}
               {!infoLoading && !hasWriteUp && !infoError && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center border border-zinc-800/50 rounded-2xl p-6 bg-zinc-950/40 fade-in">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center border border-zinc-800/50 rounded-2xl p-4 sm:p-6 bg-zinc-950/40 fade-in">
                   {preview && (
                     <div className="overflow-hidden rounded-xl border border-zinc-800 bg-black/40 shadow-xl">
                       {/* eslint-disable-next-line @next/next/no-img-element */}

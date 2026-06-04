@@ -510,7 +510,7 @@ function SplitBulletCard({
   return (
     <section
       aria-label={`${leftTitle} and ${rightTitle}`}
-      className={`grid gap-4 ${leftItems.length && rightItems.length ? "lg:grid-cols-2" : ""}`}
+      className={`grid gap-4 ${leftItems.length && rightItems.length ? "sm:grid-cols-2" : ""}`}
     >
       {leftItems.length > 0 && (
         <div className="rounded-xl border border-emerald-800/50 bg-emerald-950/20 p-5">
@@ -811,7 +811,7 @@ function CustomFullAnswerLayout({
 
       {/* 3+4. Facts & caveats */}
       {(hasFacts || hasCaveats) && (
-        <div className={`grid gap-4 ${hasFacts && hasCaveats ? "lg:grid-cols-2" : ""}`}>
+        <div className={`grid gap-4 ${hasFacts && hasCaveats ? "sm:grid-cols-2" : ""}`}>
           {hasFacts && (
             <div className="rounded-xl border border-emerald-800/50 bg-emerald-950/20 p-5">
               <h3

@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.model_loader import classifier_from_env, PlantClassifier
-from app.gemini_fallback import classify_with_gemini, should_fallback
+from app.llm_fallback import should_fallback, classify_with_fallback_chain
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -43,6 +43,31 @@ def _enforce_predict_rate_limit(key: str) -> None:
     _rate_windows[key] = (window_start, count + 1)
 
 
+# Labels that signal the image is not a leaf/plant
+NOT_LEAF_LABELS = {"not_a_leaf", "not a leaf", "no leaf", "not_plant"}
+
+def _is_not_a_leaf(predictions: list[dict]) -> bool:
+    """
+    Returns True if the top prediction explicitly signals a non-leaf image.
+    Handles labels returned by both the local model and LLM fallbacks.
+    """
+    if not predictions:
+        return True
+    label_clean = predictions[0]["label"].lower().strip()
+    return any(label_clean == nl for nl in NOT_LEAF_LABELS)
+
+
+NOT_LEAF_RESPONSE = {
+    "predictions": [],
+    "source": "local_model",
+    "error": "not_a_leaf",
+    "message": (
+        "The uploaded image does not appear to be a leaf or plant. "
+        "Please upload a clear image of a leaf."
+    ),
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _classifier
@@ -73,11 +98,13 @@ app.add_middleware(
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     gemini_enabled = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    groq_enabled   = bool(os.environ.get("GROQ_API_KEY", "").strip())
     return {
         "status": "ok",
         "model_loaded": _classifier is not None,
         "mock": bool(_classifier and _classifier.mock),
         "gemini_fallback_enabled": gemini_enabled,
+        "groq_fallback_enabled": groq_enabled,
     }
 
 
@@ -109,12 +136,14 @@ async def predict(request: Request, file: UploadFile = File(...), top_k: int = 5
 
     k = max(1, min(top_k, 20))
 
-    # ── Step 1: run local model ────────────────────────────────────────────────
+    # ── Step 1: Run local model ────────────────────────────────────────────────
     try:
         predictions = _classifier.predict_topk(raw, k=k)
-        logger.info("Local model predictions: %s (confidence: %.2f%%)", 
-                   predictions[0]["label"] if predictions else "none",
-                   predictions[0]["confidence"] * 100 if predictions else 0)
+        logger.info(
+            "Local model prediction: %s (confidence: %.2f%%)",
+            predictions[0]["label"] if predictions else "none",
+            predictions[0]["confidence"] * 100 if predictions else 0,
+        )
     except (ValueError, OSError) as e:
         raise HTTPException(
             status_code=400, detail=f"Invalid image payload: {e!s}"
@@ -122,33 +151,47 @@ async def predict(request: Request, file: UploadFile = File(...), top_k: int = 5
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference failed: {e!s}") from e
 
-    # ── Step 2: Gemini fallback if local model is not confident enough ─────────
     source = "local_model"
-    gemini_available = bool(os.environ.get("GEMINI_API_KEY", "").strip())
 
-    if gemini_available and should_fallback(predictions):
-        logger.info("Local model confidence %.2f%% below threshold, using Gemini fallback", 
-                   predictions[0]["confidence"] * 100 if predictions else 0)
+    any_llm_available = bool(
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GROQ_API_KEY", "").strip()
+    )
+
+    # ── Step 2: LLM fallback chain (low confidence → try Gemini then Groq) ─────
+    if any_llm_available and should_fallback(predictions):
+        logger.info(
+            "Local model confidence %.2f%% below threshold — trying LLM fallback chain.",
+            predictions[0]["confidence"] * 100 if predictions else 0,
+        )
         try:
-            gemini_preds = classify_with_gemini(
+            predictions, source = classify_with_fallback_chain(
                 image_bytes=raw,
                 content_type=file.content_type or "image/jpeg",
                 top_k=k,
             )
-            logger.info("Gemini fallback predictions: %s", gemini_preds[0] if gemini_preds else "none")
-            predictions = gemini_preds
-            source = "gemini_fallback"
+            logger.info("LLM fallback succeeded via: %s", source)
         except RuntimeError as e:
-            # Gemini failed → return the local model's low-confidence result
-            # with a warning rather than crashing the whole request.
-            logger.warning("Gemini fallback failed: %s. Returning local model results.", e)
-            source = "local_model_gemini_failed"
+            # Every LLM provider failed — return local model result with a warning
+            logger.warning(
+                "All LLM fallbacks failed: %s. Returning local model results.", e
+            )
             return {
                 "predictions": predictions,
-                "source": source,
-                "warning": f"Gemini fallback attempted but failed: {e!s}",
+                "source": "local_model_all_fallbacks_failed",
+                "warning": f"All vision fallbacks failed: {e!s}",
             }
 
+    # ── Step 3: Not-a-leaf guard (runs on both local and LLM results) ──────────
+    if _is_not_a_leaf(predictions):
+        logger.info(
+            "Image rejected as non-leaf. Top label: %s (source: %s)",
+            predictions[0]["label"] if predictions else "none",
+            source,
+        )
+        return {**NOT_LEAF_RESPONSE, "source": source}
+
+    # ── Step 4: Return final predictions ──────────────────────────────────────
     return {
         "predictions": predictions,
         "source": source,
