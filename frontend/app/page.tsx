@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlantAnswerDisplay } from "@/app/display_section";
+import { MarkdownRenderer } from "@/app/markdown-renderer";
 import type { PlantInfoFocus, PlantInfoSections, PlantInfoWebSearch } from "@/types/plant-info";
 import {
   Camera,
@@ -99,6 +100,20 @@ function isPredictionArray(value: unknown): value is Prediction[] {
         typeof (x as { confidence?: unknown }).confidence === "number",
     )
   );
+}
+
+/** Parse a label that may contain "LocalName || ScientificName" delimiter */
+function parsePlantLabel(label: string): { localName: string; scientificName: string | null } {
+  if (label.includes(" || ")) {
+    const [local, scientific] = label.split(" || ", 2);
+    return { localName: local.trim(), scientificName: scientific?.trim() || null };
+  }
+  // Legacy format: "Scientific Name (Common Name)" → extract common name as local
+  const match = label.match(/^(.+?)\s*\((.+?)\)$/);
+  if (match) {
+    return { localName: match[2].trim(), scientificName: match[1].trim() };
+  }
+  return { localName: label, scientificName: null };
 }
 
 function isPlantInfoSections(value: unknown): value is PlantInfoSections {
@@ -204,6 +219,13 @@ export default function Home() {
   const [writeUpKey, setWriteUpKey] = useState(0);
   const [dragOver, setDragOver] = useState(false);
 
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  const streamingBufferRef = useRef("");
+  const streamFinishedRef = useRef(false);
+  const typewriterIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   const topPrediction = predictions?.[0] ?? null;
   const customQuestionTrimmed = customQuestion.trim();
   const customQuestionValid =
@@ -228,7 +250,7 @@ export default function Home() {
     [infoWebSearch],
   );
 
-  const hasWriteUp = !!(infoSections || infoText);
+  const hasWriteUp = !!(infoSections || infoText || streamingText);
 
   // Step states
   const step1Done = !!file;
@@ -254,6 +276,22 @@ export default function Home() {
     setInfoAnswerMode(null);
     setInfoFocusLabel(null);
     setInfoCustomQuestion(null);
+    setStreamingText(null);
+    setIsStreaming(false);
+    if (typewriterIntervalRef.current) {
+      clearInterval(typewriterIntervalRef.current);
+      typewriterIntervalRef.current = null;
+    }
+    streamingBufferRef.current = "";
+    streamFinishedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (typewriterIntervalRef.current) {
+        clearInterval(typewriterIntervalRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => () => resetPreview(), [resetPreview]);
@@ -304,8 +342,34 @@ export default function Home() {
     setInfoError(null);
     clearInfo();
     const note = predictions?.slice(0, 3).map((p) => `${p.label} (${(p.confidence * 100).toFixed(1)}%)`).join("; ");
+    
+    setStreamingText("");
+    setIsStreaming(true);
+    streamingBufferRef.current = "";
+    streamFinishedRef.current = false;
+
+    if (typewriterIntervalRef.current) {
+      clearInterval(typewriterIntervalRef.current);
+    }
+
+    typewriterIntervalRef.current = setInterval(() => {
+      if (streamingBufferRef.current.length > 0) {
+        // Output 4 characters every 15ms for smooth typewriter effect
+        const charsToType = Math.min(4, streamingBufferRef.current.length);
+        const nextChunk = streamingBufferRef.current.slice(0, charsToType);
+        streamingBufferRef.current = streamingBufferRef.current.slice(charsToType);
+        setStreamingText((prev) => (prev || "") + nextChunk);
+      } else if (streamFinishedRef.current) {
+        setIsStreaming(false);
+        if (typewriterIntervalRef.current) {
+          clearInterval(typewriterIntervalRef.current);
+          typewriterIntervalRef.current = null;
+        }
+      }
+    }, 15);
+    
     try {
-      const res = await fetch("/api/plant-info", {
+      const res = await fetch("/api/plant-info-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -317,39 +381,111 @@ export default function Home() {
           numSearchResults: 5,
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setInfoError(typeof data.detail === "string" ? data.detail : res.statusText); return; }
-      const ws = (data as { webSearch?: unknown }).webSearch;
-      setInfoWebSearch(isPlantInfoWebSearch(ws) ? ws : null);
-      setInfoDegraded(data.degraded === true);
-      const highlights = (data as { highlights?: unknown }).highlights;
-      setInfoHighlights(Array.isArray(highlights) && highlights.every((x) => typeof x === "string") ? highlights : []);
-      setInfoModel(typeof data.model === "string" ? data.model : null);
-      const rawMode = (data as { answerMode?: unknown }).answerMode;
-      setInfoAnswerMode(rawMode === "short" || rawMode === "full" ? rawMode : null);
-      const returnedFocus = typeof (data as { focus?: unknown }).focus === "string" ? ((data as { focus: string }).focus as PlantInfoFocus) : infoFocus;
-      if (returnedFocus !== infoFocus) setInfoFocus(returnedFocus);
-      const cq = typeof (data as { customQuestion?: unknown }).customQuestion === "string" ? (data as { customQuestion: string }).customQuestion.trim() : "";
-      setInfoCustomQuestion(returnedFocus === "custom" && cq ? cq : null);
-      setInfoFocusLabel(typeof data.focusLabel === "string" ? data.focusLabel : (FOCUS_OPTIONS.find((o) => o.value === returnedFocus)?.label ?? null));
-      const warnings: string[] = [];
-      if (typeof data.warning === "string" && data.warning.trim()) warnings.push(data.warning);
-      setInfoWarning(warnings.length > 0 ? warnings.join(" ") : null);
-      setFocusChanged(false);
-      const sec = (data as { sections?: unknown }).sections;
-      if (isPlantInfoSections(sec)) {
-        setInfoSections(sec);
-        setInfoText(typeof data.text === "string" ? data.text : null);
-      } else if (typeof data.text === "string") {
-        setInfoText(data.text);
-      } else {
-        setInfoError("Unexpected response format from server.");
-        return;
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "Streaming request failed");
+        throw new Error(errText || `HTTP ${res.status}`);
       }
+
+      if (!res.body) {
+        throw new Error("No response body available for streaming");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6).trim();
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === "meta") {
+                if (data.webSearch) setInfoWebSearch(data.webSearch);
+                if (data.model) setInfoModel(data.model);
+                if (data.focusLabel) setInfoFocusLabel(data.focusLabel);
+                setInfoLoading(false);
+              } else if (data.type === "chunk") {
+                setInfoLoading(false);
+                streamingBufferRef.current += data.content;
+              } else if (data.type === "error") {
+                setInfoError(data.message);
+                setIsStreaming(false);
+                setInfoLoading(false);
+                streamFinishedRef.current = true;
+                return;
+              } else if (data.type === "done") {
+                streamFinishedRef.current = true;
+              }
+            } catch (err) {
+              console.error("Error parsing SSE line:", err);
+            }
+          }
+        }
+      }
+      
+      streamFinishedRef.current = true;
       setWriteUpKey((k) => k + 1);
       setTimeout(() => { writeUpRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, 80);
+      
     } catch (e) {
-      setInfoError(e instanceof Error ? e.message : "Request failed.");
+      console.warn("Streaming failed, falling back to static generation:", e);
+      try {
+        const res = await fetch("/api/plant-info", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            plantName: top.label,
+            classificationNote: note,
+            focus: infoFocus,
+            ...(infoFocus === "custom" ? { customQuestion: customQuestionTrimmed } : {}),
+            includeWebSearch,
+            numSearchResults: 5,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { setInfoError(typeof data.detail === "string" ? data.detail : res.statusText); return; }
+        const ws = (data as { webSearch?: unknown }).webSearch;
+        setInfoWebSearch(isPlantInfoWebSearch(ws) ? ws : null);
+        setInfoDegraded(data.degraded === true);
+        const highlights = (data as { highlights?: unknown }).highlights;
+        setInfoHighlights(Array.isArray(highlights) && highlights.every((x) => typeof x === "string") ? highlights : []);
+        setInfoModel(typeof data.model === "string" ? data.model : null);
+        const rawMode = (data as { answerMode?: unknown }).answerMode;
+        setInfoAnswerMode(rawMode === "short" || rawMode === "full" ? rawMode : null);
+        const returnedFocus = typeof (data as { focus?: unknown }).focus === "string" ? ((data as { focus: string }).focus as PlantInfoFocus) : infoFocus;
+        if (returnedFocus !== infoFocus) setInfoFocus(returnedFocus);
+        const cq = typeof (data as { customQuestion?: unknown }).customQuestion === "string" ? (data as { customQuestion: string }).customQuestion.trim() : "";
+        setInfoCustomQuestion(returnedFocus === "custom" && cq ? cq : null);
+        setInfoFocusLabel(typeof data.focusLabel === "string" ? data.focusLabel : (FOCUS_OPTIONS.find((o) => o.value === returnedFocus)?.label ?? null));
+        const warnings: string[] = [];
+        if (typeof data.warning === "string" && data.warning.trim()) warnings.push(data.warning);
+        setInfoWarning(warnings.length > 0 ? warnings.join(" ") : null);
+        setFocusChanged(false);
+        const sec = (data as { sections?: unknown }).sections;
+        if (isPlantInfoSections(sec)) {
+          setInfoSections(sec);
+          setInfoText(typeof data.text === "string" ? data.text : null);
+        } else if (typeof data.text === "string") {
+          setInfoText(data.text);
+        } else {
+          setInfoError("Unexpected response format from server.");
+          return;
+        }
+        setWriteUpKey((k) => k + 1);
+        setTimeout(() => { writeUpRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, 80);
+      } catch (fallbackError) {
+        setInfoError(fallbackError instanceof Error ? fallbackError.message : "Request failed.");
+      }
     } finally {
       setInfoLoading(false);
     }
@@ -422,7 +558,7 @@ export default function Home() {
           </div>
           {predictions && (
             <span className="rounded-md bg-zinc-900 border border-zinc-800 px-2.5 py-1 text-xs font-medium text-emerald-300 mono">
-              {predictions[0]?.label}
+              {parsePlantLabel(predictions[0]?.label ?? "").localName}
             </span>
           )}
         </div>
@@ -554,8 +690,13 @@ export default function Home() {
                           </span>
                         )}
                         <p className={`truncate text-sm font-semibold leading-tight ${idx === 0 ? "text-zinc-100" : "text-zinc-400"}`}>
-                          {p.label}
+                          {parsePlantLabel(p.label).localName}
                         </p>
+                        {parsePlantLabel(p.label).scientificName && (
+                          <p className={`truncate text-xs italic leading-tight mt-0.5 ${idx === 0 ? "text-zinc-400" : "text-zinc-500"}`}>
+                            {parsePlantLabel(p.label).scientificName}
+                          </p>
+                        )}
                         {idx > 0 && (
                           <div className="mt-1.5 flex items-center gap-2">
                             <div className="h-1 flex-1 overflow-hidden rounded-full bg-zinc-800">
@@ -804,8 +945,13 @@ export default function Home() {
                       Classification complete
                     </p>
                     <h1 className="text-2xl font-semibold tracking-tight text-zinc-100 leading-tight">
-                      {predictions[0]?.label}
+                      {parsePlantLabel(predictions[0]?.label ?? "").localName}
                     </h1>
+                    {parsePlantLabel(predictions[0]?.label ?? "").scientificName && (
+                      <p className="text-base italic text-zinc-400 mt-1">
+                        {parsePlantLabel(predictions[0]?.label ?? "").scientificName}
+                      </p>
+                    )}
                     <p className="mt-1.5 text-sm text-zinc-500">
                       Confidence{" "}
                       <span className="font-bold text-emerald-400 mono">
@@ -827,7 +973,7 @@ export default function Home() {
               </div>
 
               {/* Loading skeleton */}
-              {infoLoading && (
+              {infoLoading && !streamingText && (
                 <div className="rounded-2xl border border-zinc-800/60 bg-zinc-950/50 p-6 animate-pulse space-y-5 fade-in">
                   <div className="space-y-2">
                     <div className="h-2 w-16 rounded-full bg-zinc-800" />
@@ -852,6 +998,45 @@ export default function Home() {
                 </div>
               )}
 
+              {/* Preview + top prediction — shown only when no write-up exists yet */}
+              {!infoLoading && !infoError && !hasWriteUp && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center border border-zinc-800/50 rounded-2xl p-4 sm:p-6 bg-zinc-950/40 fade-in">
+                  {preview && (
+                    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-black/40 shadow-xl">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={preview} alt="Leaf preview" className="max-h-[360px] w-full object-contain mx-auto" />
+                    </div>
+                  )}
+                  <div className="space-y-5">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.22em] text-emerald-500/70 mb-2">Top predicted species</p>
+                      <h2 className="text-2xl font-bold tracking-tight text-zinc-100 leading-tight">{parsePlantLabel(predictions[0]?.label ?? "").localName}</h2>
+                      {parsePlantLabel(predictions[0]?.label ?? "").scientificName && (
+                        <p className="text-base italic text-zinc-400 mt-1">
+                          {parsePlantLabel(predictions[0]?.label ?? "").scientificName}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <ConfidenceRing pct={Math.round(predictions[0]!.confidence * 100)} />
+                      <div>
+                        <p className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">Confidence</p>
+                        <p className="text-2xl font-bold text-emerald-400 mono tabular-nums">
+                          {(predictions[0]!.confidence * 100).toFixed(1)}%
+                        </p>
+                      </div>
+                    </div>
+                    {!hasWriteUp && (
+                      <p className="text-xs leading-relaxed text-zinc-600">
+                        Select a report focus in the sidebar and click{" "}
+                        <span className="text-zinc-400 font-semibold">Generate Write-up</span>{" "}
+                        to get a detailed AI analysis.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Write-up */}
               {!infoLoading && hasWriteUp && (
                 <div ref={writeUpRef} key={writeUpKey} className="space-y-4 fade-in">
@@ -867,6 +1052,10 @@ export default function Home() {
                       model={infoModel}
                       answerMode={infoAnswerMode ?? undefined}
                     />
+                  ) : streamingText ? (
+                    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-6 shadow-sm">
+                      <MarkdownRenderer content={streamingText} isStreaming={isStreaming} />
+                    </div>
                   ) : (
                     <div className="rounded-2xl border border-zinc-800 bg-zinc-950/70 p-6">
                       <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">{infoText}</div>
@@ -892,38 +1081,6 @@ export default function Home() {
                       </ul>
                     </section>
                   )}
-                </div>
-              )}
-
-              {/* Preview + top prediction when no write-up yet */}
-              {!infoLoading && !hasWriteUp && !infoError && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center border border-zinc-800/50 rounded-2xl p-4 sm:p-6 bg-zinc-950/40 fade-in">
-                  {preview && (
-                    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-black/40 shadow-xl">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={preview} alt="Leaf preview" className="max-h-[360px] w-full object-contain mx-auto" />
-                    </div>
-                  )}
-                  <div className="space-y-5">
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.22em] text-emerald-500/70 mb-2">Top predicted species</p>
-                      <h2 className="text-2xl font-bold tracking-tight text-zinc-100 leading-tight">{predictions[0]?.label}</h2>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <ConfidenceRing pct={Math.round(predictions[0]!.confidence * 100)} />
-                      <div>
-                        <p className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">Confidence</p>
-                        <p className="text-2xl font-bold text-emerald-400 mono tabular-nums">
-                          {(predictions[0]!.confidence * 100).toFixed(1)}%
-                        </p>
-                      </div>
-                    </div>
-                    <p className="text-xs leading-relaxed text-zinc-600">
-                      Select a report focus in the sidebar and click{" "}
-                      <span className="text-zinc-400 font-semibold">Generate Write-up</span>{" "}
-                      to get a detailed AI analysis.
-                    </p>
-                  </div>
                 </div>
               )}
             </div>

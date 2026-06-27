@@ -1,18 +1,18 @@
 # Python
-ml-service/__pycache__/
-ml-service/**/__pycache__/
-ml-service/.venv/
-ml-service/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.venv/
+backend/venv/
 *.pyc
 
 # Data (download PlantVillage yourself)
-ml-service/data/
+backend/data/
 
 # Node / Next
-web/node_modules/
-web/.next/
-web/out/
-web/.env.local
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
 
 # OS
 .DS_Store
@@ -24,3 +24,5 @@ data/*
 .env
 .env.local
 .env.example
+
+.vscode

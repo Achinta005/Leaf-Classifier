@@ -48,7 +48,7 @@ export type PlantInfoFocus =
 // ─── Web-search types ─────────────────────────────────────────────────────────
 
 /** Which search provider was used (or null if none). */
-export type WebSearchProvider = "serpapi" | "google_cse" | null;
+export type WebSearchProvider = "serpapi" | "google_cse" | "wikipedia" | null;
 
 /** A single search result hit. */
 export type WebSearchHit = {
@@ -196,6 +196,7 @@ export function isPlantInfoWebSearch(
     typeof ws.used === "boolean" &&
     (ws.provider === "serpapi" ||
       ws.provider === "google_cse" ||
+      ws.provider === "wikipedia" ||
       ws.provider === null) &&
     Array.isArray(ws.results)
   );

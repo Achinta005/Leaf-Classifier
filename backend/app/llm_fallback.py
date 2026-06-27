@@ -62,20 +62,24 @@ _SYSTEM_PROMPT = """You are a botanist AI assistant specialised in leaf and plan
 Given an image of a leaf (or plant), return ONLY a JSON array (no markdown, no explanation)
 with up to 5 predictions in descending confidence order.
 
-Each element must have exactly two keys:
-  "label"      : the plant scientific name or common name, followed by the local/regional name
-                 in brackets (e.g. "Solanum lycopersicum (Tomato)", "Mangifera indica (Mango)")
-  "confidence" : a float between 0.0 and 1.0
+Each element must have exactly three keys:
+  "local_name"      : the common Indian local name of the plant in English
+                      (e.g. "Tulsi", "Neem", "Mango", "Taro", "Amla", "Giloy").
+                      Use the most widely recognized Indian common name.
+                      If you are not sure of an Indian name, use the most common English name.
+  "scientific_name" : the botanical / scientific (Latin) name
+                      (e.g. "Ocimum tenuiflorum", "Azadirachta indica", "Mangifera indica")
+  "confidence"      : a float between 0.0 and 1.0
 
 Example output:
 [
-  {"label": "Solanum lycopersicum (Tomato)", "confidence": 0.87},
-  {"label": "Capsicum annuum (Bell Pepper)",  "confidence": 0.08},
-  {"label": "Unknown Leaf",                   "confidence": 0.05}
+  {"local_name": "Tomato",      "scientific_name": "Solanum lycopersicum",  "confidence": 0.87},
+  {"local_name": "Bell Pepper", "scientific_name": "Capsicum annuum",       "confidence": 0.08},
+  {"local_name": "Unknown Leaf","scientific_name": "Unknown",              "confidence": 0.05}
 ]
 
 If the image does not appear to contain a leaf or plant, return:
-[{"label": "not_a_leaf", "confidence": 1.0}]
+[{"local_name": "not_a_leaf", "scientific_name": "N/A", "confidence": 1.0}]
 
 Return ONLY the JSON array. No markdown fences, no extra text.
 """
@@ -170,7 +174,21 @@ def _parse_predictions(text: str, top_k: int, provider: str) -> list[dict[str, A
     for item in parsed[:top_k]:
         if not isinstance(item, dict):
             continue
-        label = str(item.get("label", "unknown_leaf")).strip()
+        # Support both new format (local_name + scientific_name) and legacy (label)
+        local_name = str(item.get("local_name", "")).strip()
+        scientific_name = str(item.get("scientific_name", "")).strip()
+        legacy_label = str(item.get("label", "")).strip()
+
+        # Build the combined label using "||" delimiter for the frontend to split
+        if local_name and scientific_name and scientific_name.lower() not in ("", "n/a", "unknown", "null", "none"):
+            label = f"{local_name} || {scientific_name}"
+        elif local_name:
+            label = local_name
+        elif legacy_label:
+            label = legacy_label
+        else:
+            label = "unknown_leaf"
+
         try:
             confidence = float(item.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
